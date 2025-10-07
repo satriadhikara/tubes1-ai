@@ -5,13 +5,14 @@ import time
 
 ## Output object
 @dataclass
-class PosisiKuliah:
+class Slot:
     kode_ruangan: str
     waktu_mulai: tuple[str, int]
+    waktu_akhir: tuple[str, int]
 
 @dataclass
 class JadwalKuliah:
-    posisi_kuliah: dict[str, list[PosisiKuliah]]
+    slot_kuliah: dict[str, list[Slot]]
 
 ## Constraint
 LIST_HARI = [
@@ -35,7 +36,7 @@ class KelasMataKuliah:
 @dataclass
 class Ruangan:
     kode: str
-    kapasitas: int
+    kuota: int
 
 @dataclass
 class KuliahMahasiswa:
@@ -53,43 +54,46 @@ class State:
 
     # Throw ValueError on invalid input state. Call immediately before algorithm start
     def validate(self):
-        kode_kelas_mk_set = set()
+        kode_kelas_mk = dict()  # Dictionary untuk validasi jumlah mahasiswa
         for kelas in self.list_kelas:
-            kode_kelas_mk_set.add(kelas.kode)
+            if kelas.kode in kode_kelas_mk:
+                raise ValueError(f"Terdapat duplikat kode kelas {kelas.kode}")
+            kode_kelas_mk[kelas.kode] = kelas.jumlah_mahasiswa
             if kelas.sks<1:
-                raise ValueError("SKS tidak lebih dari nol")
+                raise ValueError(f"SKS kelas {kelas.kode} tidak lebih dari nol")
             if kelas.jumlah_mahasiswa<1:
-                raise ValueError("Jumlah mahasiswa tidak lebih dari nol")
-        if len(kode_kelas_mk_set)!=len(self.list_kelas):
-            raise ValueError("Terdapat kode kelas mata kuliah duplikat")
+                raise ValueError(f"Jumlah mahasiswa pada kelas {kelas.kode} tidak lebih dari nol")
     
         kode_ruangan_set = set()
         for ruangan in self.list_ruangan:
             kode_ruangan_set.add(ruangan.kode)
-            if ruangan.kapasitas<0:
+            if ruangan.kuota<0:
                 raise ValueError("Kapasitas ruangan negatif")
         if len(kode_ruangan_set)!=len(self.list_ruangan):
             raise ValueError("Terdapat kode ruangan duplikat")
         
         for mahasiswa in self.list_kuliah_mahasiswa:
-            for kuliah in self.list_kuliah_mahasiswa:
-                # Validasi prioritas 1..n
-                n = len(kuliah.prio_mata_kuliah)
-                for prio, kode_mk in kuliah.prio_mata_kuliah.items():
-                    if prio<1 or prio>n:
-                        raise ValueError(f"Mahasiswa NIM {mahasiswa.nim} memiliki nomor prioritas invalid ({prio})")
-                    if kode_mk not in kode_kelas_mk_set:
-                        raise ValueError(f"Mahasiswa NIM {mahasiswa.nim} memiliki kode mata kuliah invalid ({kode_mk})")
-
+            # Validasi prioritas 1..n
+            n = len(mahasiswa.prio_mata_kuliah)
+            for prio, kode_mk in mahasiswa.prio_mata_kuliah.items():
+                if prio<1 or prio>n:
+                    raise ValueError(f"Mahasiswa NIM {mahasiswa.nim} memiliki nomor prioritas invalid ({prio})")
+                if kode_mk not in kode_kelas_mk:
+                    raise ValueError(f"Mahasiswa NIM {mahasiswa.nim} memiliki kode mata kuliah invalid ({kode_mk})")
+                kode_kelas_mk[kode_mk]-=1
+        
+        for kode_kelas, jumlah_mahasiswa in kode_kelas_mk.items():
+            if jumlah_mahasiswa!=0:
+                raise ValueError(f"Kode kelas {kode_kelas} memiliki jumlah mahasiswa invalid")
 
     # Untuk setiap kelas kelas, random ruangan
     # Waktu kuliah diacak perjam. Jika n sks, terbentuk n waktu kuliah, belum tentu berurut tetapi tidak overlap
     def seed_jadwal(self):
-        posisi_dict = dict()
+        kuliah_dict = dict()
         list_kode_ruangan = [ruangan.kode for ruangan in self.list_ruangan]
 
         for kelas in self.list_kelas:
-            posisi_list = []
+            slot_list = []
             waktu_mulai = []
             for _ in range(kelas.sks):
                 waktu = (self.random.choice(LIST_HARI), self.random.randint(MULAI_WAKTU_KULIAH, AKHIR_WAKTU_KULIAH-1))
@@ -97,14 +101,15 @@ class State:
                     waktu = (self.random.choice(LIST_HARI), self.random.randint(MULAI_WAKTU_KULIAH, AKHIR_WAKTU_KULIAH-1))
                 waktu_mulai.append(waktu)
 
-                posisi = PosisiKuliah(
+                slot = Slot(
                     kode_ruangan=self.random.choice(list_kode_ruangan),
                     waktu_mulai=waktu,
+                    waktu_akhir=(waktu[0], waktu[1]+1)
                 )
-                posisi_list.append(posisi)
-            posisi_dict[kelas.kode] = posisi_list
+                slot_list.append(slot)
+            kuliah_dict[kelas.kode] = slot_list
         
-        self.output_jadwal = JadwalKuliah(posisi_kuliah=posisi_dict)
+        self.output_jadwal = JadwalKuliah(kuliah_dict)
         
     def objective(self) -> float:
         # TODO
