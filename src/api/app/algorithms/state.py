@@ -95,6 +95,10 @@ class State:
         self.jadwal = jadwal    # For initial seeding, call self.seed_waktu_kuliah()
         self.random = randomizer
 
+        # Attributes for calculating objective function
+        self.timetable_mahasiswa = {slot: 0 for slot in LIST_WAKTU_MULAI}
+        self.kuota_ruangan = {ruangan.kode:ruangan.kuota for ruangan in self.problem.list_ruangan}
+    
     # Untuk setiap kelas kelas, random ruangan
     # Waktu kuliah diacak perjam. Jika n sks, terbentuk n waktu kuliah, belum tentu berurut tapi kelas tidak akan overlap dengan kelas itu sendiri
     def seed_jadwal(self):
@@ -118,6 +122,31 @@ class State:
         self.jadwal = JadwalKuliah(kuliah_dict)
         
     def objective(self) -> float:
-        # TODO
-        return 0
+        return self._tabrakan_jadwal_mahasiswa()+self._kuota_kelas()
+    
+    def _tabrakan_jadwal_mahasiswa(self) -> float:
+        res = 0
+        timetable = self.timetable_mahasiswa
+        for mhs in self.problem.list_kuliah_mahasiswa:
+            for kuliah in mhs.prio_mata_kuliah.values():
+                for slot in self.jadwal.slot_kuliah[kuliah]:
+                    key = (slot.hari, slot.waktu_mulai)
+                    timetable[key]+=1
             
+            for key in timetable.keys():
+                tabrakan = timetable[key]
+                if tabrakan>1:
+                    res += tabrakan
+                timetable[key] = 0
+        return res
+    
+    def _kuota_kelas(self):
+        res = 0
+        kuota_ruangan = self.kuota_ruangan
+        for kelas in self.problem.list_kelas:
+            kode = kelas.kode
+            for slot in self.jadwal.slot_kuliah[kode]:
+                kuota = kuota_ruangan[slot.kode_ruangan]
+                if kelas.jumlah_mahasiswa>kuota:
+                    res += kelas.jumlah_mahasiswa - kuota
+        return res
