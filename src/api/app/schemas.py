@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Dict, Union
+from typing import List, Dict, Optional
 
 class KelasMataKuliahModel(BaseModel):
     kode: str
@@ -22,10 +22,22 @@ class StateInputModel(BaseModel):
 
 
 class SlotKuliahModel(BaseModel):
-    kode_ruangan: str
-    waktu_mulai: List[Union[str, int]]
-    waktu_akhir: List[Union[str, int]]
+    kode_kelas_kuliah: str
+    hari: str
+    waktu_mulai: int
+    waktu_akhir: int
 
-class SearchResultModel(BaseModel):
-    jadwal_kuliah: Dict[str, List[SlotKuliahModel]]
+class ResultsModel(BaseModel):
+    alokasi_ruangan_awal: Dict[str, List[SlotKuliahModel]]
+    alokasi_ruangan: Dict[str, List[SlotKuliahModel]]
     search_time: float
+    iteration: int
+    objective_over_iteration: List[float]
+
+class SimulatedAnnealingResultsModel(ResultsModel):
+    local_optima_stuck_count: int
+    delta_energy_over_iteration: list[float]
+    temperature_over_iteration: list[float]
+
+class SimulatedAnnealingResponseModel(BaseModel):
+    run: Dict[int, SimulatedAnnealingResultsModel]

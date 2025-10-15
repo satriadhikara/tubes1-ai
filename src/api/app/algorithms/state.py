@@ -1,18 +1,18 @@
 from dataclasses import dataclass
-import random
 import time
-
+import random
 
 ## Output object
-@dataclass
+@dataclass(frozen=True)
 class Slot:
     kode_ruangan: str
-    waktu_mulai: tuple[str, int]
-    waktu_akhir: tuple[str, int]
+    hari: str
+    waktu_mulai: int
+    waktu_akhir: int
 
 @dataclass
 class JadwalKuliah:
-    slot_kuliah: dict[str, list[Slot]]
+    slot_kuliah: dict[str, list[Slot]]  # Banyaknya slot tiap kuliah == bobot sks
 
 ## Constraint
 LIST_HARI = [
@@ -25,6 +25,11 @@ LIST_HARI = [
 # Kuliah mulai paling awal pukul 7 dan selesai paling akhir 18
 MULAI_WAKTU_KULIAH = 7
 AKHIR_WAKTU_KULIAH = 18
+LIST_WAKTU_MULAI: list[tuple[str, int]] = [
+    (hari, j)
+    for hari in LIST_HARI
+    for j in range(MULAI_WAKTU_KULIAH, AKHIR_WAKTU_KULIAH)
+]
 
 ## Input object
 @dataclass
@@ -44,13 +49,11 @@ class KuliahMahasiswa:
     prio_mata_kuliah: dict[int, str]    # Key: nomor prioritas, Value: Kode kelas mata kuliah
 
 
-class State:
-    def __init__(self, list_kelas: list[KelasMataKuliah] =[], list_ruangan: list[Ruangan] =[], list_kuliah_mahasiswa: list[KuliahMahasiswa] =[], seed: int =int(time.time()*1000)):
-        self.random = random.Random(seed)
+class Problem:
+    def __init__(self, list_kelas: list[KelasMataKuliah], list_ruangan: list[Ruangan] =[], list_kuliah_mahasiswa: list[KuliahMahasiswa] =[]):
         self.list_kelas = list_kelas
         self.list_ruangan = list_ruangan
         self.list_kuliah_mahasiswa = list_kuliah_mahasiswa
-        self.output_jadwal: JadwalKuliah  = dict()    # For initial seeding, call self.seed_waktu_kuliah()
 
     # Throw ValueError on invalid input state. Call immediately before algorithm start
     def validate(self):
@@ -86,30 +89,33 @@ class State:
             if jumlah_mahasiswa!=0:
                 raise ValueError(f"Kode kelas {kode_kelas} memiliki jumlah mahasiswa invalid")
 
+class State:
+    def __init__(self, problem: Problem, jadwal = JadwalKuliah({}), randomizer = random.Random(int(time.time()*1000))):
+        self.problem = problem
+        self.jadwal = jadwal    # For initial seeding, call self.seed_waktu_kuliah()
+        self.random = randomizer
+
     # Untuk setiap kelas kelas, random ruangan
-    # Waktu kuliah diacak perjam. Jika n sks, terbentuk n waktu kuliah, belum tentu berurut tetapi tidak overlap
+    # Waktu kuliah diacak perjam. Jika n sks, terbentuk n waktu kuliah, belum tentu berurut tapi kelas tidak akan overlap dengan kelas itu sendiri
     def seed_jadwal(self):
         kuliah_dict = dict()
-        list_kode_ruangan = [ruangan.kode for ruangan in self.list_ruangan]
+        list_kode_ruangan = [ruangan.kode for ruangan in self.problem.list_ruangan]
 
-        for kelas in self.list_kelas:
-            slot_list = []
-            waktu_mulai = []
-            for _ in range(kelas.sks):
-                waktu = (self.random.choice(LIST_HARI), self.random.randint(MULAI_WAKTU_KULIAH, AKHIR_WAKTU_KULIAH-1))
-                while waktu in waktu_mulai:
-                    waktu = (self.random.choice(LIST_HARI), self.random.randint(MULAI_WAKTU_KULIAH, AKHIR_WAKTU_KULIAH-1))
-                waktu_mulai.append(waktu)
+        for kelas in self.problem.list_kelas:
+            ruang_kelas = self.random.choices(list_kode_ruangan, k=kelas.sks)
+            jadwal_kelas = self.random.sample(LIST_WAKTU_MULAI, k=kelas.sks)
 
-                slot = Slot(
-                    kode_ruangan=self.random.choice(list_kode_ruangan),
-                    waktu_mulai=waktu,
-                    waktu_akhir=(waktu[0], waktu[1]+1)
+            kuliah_dict[kelas.kode] = [
+                Slot(
+                    ruang_kelas[i],
+                    jadwal_kelas[i][0],
+                    jadwal_kelas[i][1],
+                    jadwal_kelas[i][1]+1
                 )
-                slot_list.append(slot)
-            kuliah_dict[kelas.kode] = slot_list
+                for i in range(kelas.sks)
+            ]
         
-        self.output_jadwal = JadwalKuliah(kuliah_dict)
+        self.jadwal = JadwalKuliah(kuliah_dict)
         
     def objective(self) -> float:
         # TODO
