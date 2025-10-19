@@ -11,7 +11,11 @@ from .schemas import (
     GeneticAlgorithmResultsModel,
 )
 from .algorithms.state_model_parser import load_problem
-from .algorithms.simulated_annealing import SimulatedAnnealing
+from .algorithms.simulated_annealing import (
+    SimulatedAnnealing,
+    DEFAULT_INITIAL_TEMP,
+    DEFAULT_DECAY_RATE,
+)
 from .algorithms.hill_climbing import (
     SteepestAscentHillClimbing,
     StochasticHillClimbing,
@@ -44,12 +48,23 @@ def read_root():
 @app.post("/api/sim-anneal")
 def compute_simulated_annealing(
     request: StateInputModel,
+    initial_temp: Optional[float] = None,
+    decay: Optional[float] = None,
 ) -> SimulatedAnnealingResponseModel:
     try:
         problem = load_problem(request)
         results: dict[int, SimulatedAnnealingResultsModel] = {}
+        init_temp_value = (
+            initial_temp if initial_temp is not None else DEFAULT_INITIAL_TEMP
+        )
+        decay_value = decay if decay is not None else DEFAULT_DECAY_RATE
+
         for i in range(3):
-            solver = SimulatedAnnealing(problem)
+            solver = SimulatedAnnealing(
+                problem,
+                initial_temp=init_temp_value,
+                decay=decay_value,
+            )
             solver.search()
             results[i] = solver.get_result()
         return {"run": results}
