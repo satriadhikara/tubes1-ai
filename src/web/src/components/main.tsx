@@ -18,29 +18,16 @@ import MetricCard from "@/components/ui/metricCard";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
-function fmtPct(n: number) {
-  if (!Number.isFinite(n)) {
-    return "0.00%";
-  }
-  return `${n.toFixed(2)}%`;
-}
-
-function mockSeries(len = 60, seed = 1) {
-  let x = seed;
-  const arr: number[] = [];
-  for (let i = 0; i < len; i++) {
-    x = (x * 9301 + 49297) % 233280;
-    const v = Math.abs(Math.sin(x / 3000) * 100);
-    arr.push(v);
-  }
-  return arr;
+function formatNumber(value: number, decimals = 2): string {
+  return Number.isFinite(value) ? value.toFixed(decimals) : "-";
 }
 
 function LineChart({ title, series }: { title: string; series: number[] }) {
-  const max = Math.max(...series, 1);
-  const path = series
+  const data = series.length >= 2 ? series : [...series, ...series];
+  const max = Math.max(...data, 1);
+  const path = data
     .map((v, i) => {
-      const x = (i / (series.length - 1)) * 100;
+      const x = data.length > 1 ? (i / (data.length - 1)) * 100 : 0;
       const y = 100 - (v / max) * 100;
       return `${i === 0 ? "M" : "L"}${x},${y}`;
     })
@@ -63,13 +50,16 @@ function LineChart({ title, series }: { title: string; series: number[] }) {
   );
 }
 
-// --- main page ---
-type HillClimbingRun = {
+// --- types ---
+type BaseRun = {
   alokasi_ruangan_awal: Record<string, SlotEntry[]>;
   alokasi_ruangan: Record<string, SlotEntry[]>;
   search_time: number;
   iteration: number;
   objective_over_iteration: number[];
+};
+
+type HillClimbingRun = BaseRun & {
   local_optima_iteration?: number;
   sideways_moves?: number;
   max_sideways?: number;
@@ -77,9 +67,27 @@ type HillClimbingRun = {
   iterations_per_restart?: number[];
 };
 
+type SimulatedAnnealingRun = BaseRun & {
+  local_optima_stuck_count: number;
+  delta_energy_over_iteration: number[];
+  temperature_over_iteration: number[];
+};
+
+type SolverRun = HillClimbingRun | SimulatedAnnealingRun;
+
 type HillClimbingResponse = {
   run: Record<string, HillClimbingRun>;
 };
+
+type SimulatedAnnealingResponse = {
+  run: Record<string, SimulatedAnnealingRun>;
+};
+
+type SolverKind = "hill" | "simulated";
+
+function isSimulatedRun(run: SolverRun | undefined): run is SimulatedAnnealingRun {
+  return Boolean(run && "local_optima_stuck_count" in run);
+}
 
 export default function SchedulerUI() {
   const [jsonInput, setJsonInput] = useState<string>(
@@ -93,37 +101,66 @@ export default function SchedulerUI() {
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [runResult, setRunResult] = useState<HillClimbingRun | null>(null);
+  const [runs, setRuns] = useState<Record<string, SolverRun>>({});
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [availableRooms, setAvailableRooms] = useState<string[]>([]);
   const [lastVariant, setLastVariant] = useState<string | null>(null);
+  const [solverKind, setSolverKind] = useState<SolverKind | null>(null);
 
-  // metrics (mocked)
-  const [bestScore, setBestScore] = useState<number>(0);
-  const [duration, setDuration] = useState<number>(0);
-  const [localCount, setLocalCount] = useState<number>(0);
-  const [localFreq, setLocalFreq] = useState<number>(0);
+  const runEntries = useMemo(() => Object.entries(runs), [runs]);
 
-  const series1 = useMemo(() => mockSeries(60, 2), []);
-  const series2 = useMemo(() => mockSeries(60, 9), []);
+  useEffect(() => {
+    if (runEntries.length === 0) {
+      setSelectedRunId(null);
+      return;
+    }
+    if (!selectedRunId || !runs[selectedRunId]) {
+      setSelectedRunId(runEntries[0][0]);
+    }
+  }, [runEntries, selectedRunId, runs]);
+
+  useEffect(() => {
+    if (selectedRunId) {
+      const run = runs[selectedRunId];
+      if (run) {
+        const rooms = new Set<string>();
+        Object.keys(run.alokasi_ruangan_awal || {}).forEach((r) =>
+          rooms.add(r),
+        );
+        Object.keys(run.alokasi_ruangan || {}).forEach((r) => rooms.add(r));
+        setAvailableRooms(Array.from(rooms).sort());
+        return;
+      }
+    }
+    setAvailableRooms([]);
+  }, [selectedRunId, runs]);
 
   useEffect(() => {
     if (availableRooms.length > 0) {
       setSelectedRoom((prev) =>
         prev && availableRooms.includes(prev) ? prev : availableRooms[0],
       );
+    } else {
+      setSelectedRoom("");
     }
   }, [availableRooms]);
 
-  function mapAlgorithmToVariant(label: string): string | null {
+  type AlgorithmSelection =
+    | { kind: "hill"; variant: "steepest" | "stochastic" | "sideways" | "random_restart" }
+    | { kind: "simulated" };
+
+  function resolveAlgorithm(label: string): AlgorithmSelection | null {
     switch (label) {
       case "Steepest Ascent Hill-Climbing":
-        return "steepest";
+        return { kind: "hill", variant: "steepest" };
       case "Stochastic Hill-Climbing":
-        return "stochastic";
+        return { kind: "hill", variant: "stochastic" };
       case "Sideways Move Hill-Climbing":
-        return "sideways";
+        return { kind: "hill", variant: "sideways" };
       case "Random Restart Hill-Climbing":
-        return "random_restart";
+        return { kind: "hill", variant: "random_restart" };
+      case "Simulated Annealing":
+        return { kind: "simulated" };
       default:
         return null;
     }
@@ -138,10 +175,10 @@ export default function SchedulerUI() {
       return;
     }
 
-    const variant = mapAlgorithmToVariant(algorithm);
-    if (!variant) {
+    const selection = resolveAlgorithm(algorithm);
+    if (!selection) {
       alert(
-        "Integrasi UI saat ini baru tersedia untuk algoritma hill-climbing.",
+        "Integrasi UI saat ini hanya tersedia untuk algoritma Hill-Climbing dan Simulated Annealing.",
       );
       return;
     }
@@ -150,51 +187,48 @@ export default function SchedulerUI() {
     setError(null);
 
     try {
-      const params = new URLSearchParams({ variant });
-      const response = await fetch(`${API_BASE}/api/hill-climbing?${params}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parsedInput),
-      });
+      let response: Response;
+      if (selection.kind === "hill") {
+        const params = new URLSearchParams({ variant: selection.variant });
+        response = await fetch(`${API_BASE}/api/hill-climbing?${params}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsedInput),
+        });
+      } else {
+        response = await fetch(`${API_BASE}/api/sim-anneal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(parsedInput),
+        });
+      }
 
       if (!response.ok) {
         const errText = await response.text();
         throw new Error(errText || "Gagal menjalankan solver");
       }
 
-      const data = (await response.json()) as HillClimbingResponse;
-      const runs = Object.values(data.run);
-      if (runs.length === 0) {
+      const data = (await response.json()) as
+        | HillClimbingResponse
+        | SimulatedAnnealingResponse;
+      const runMap = (data.run ?? {}) as Record<string, SolverRun>;
+      const entries = Object.entries(runMap);
+      if (entries.length === 0) {
         throw new Error("Respons solver kosong");
       }
 
-      const bestRun = runs.reduce((best, current) => {
-        const bestObj = best.objective_over_iteration.at(-1) ?? Infinity;
-        const currentObj = current.objective_over_iteration.at(-1) ?? Infinity;
+      const bestEntry = entries.reduce((best, current) => {
+        const bestObj = best[1].objective_over_iteration.at(-1) ?? Infinity;
+        const currentObj = current[1].objective_over_iteration.at(-1) ?? Infinity;
         return currentObj < bestObj ? current : best;
       });
 
-      const finalObjective = bestRun.objective_over_iteration.at(-1) ?? 0;
-      setRunResult(bestRun);
-      setBestScore(finalObjective);
-      setDuration(bestRun.search_time ?? 0);
-      setLocalCount(bestRun.local_optima_iteration ?? bestRun.iteration ?? 0);
-
-      let auxMetric = 0;
-      if (variant === "sideways") {
-        auxMetric = bestRun.sideways_moves ?? 0;
-      } else if (variant === "random_restart") {
-        auxMetric = bestRun.restart_count ?? 0;
-      }
-      setLocalFreq(auxMetric);
-      setLastVariant(variant);
-
-      const rooms = new Set<string>();
-      Object.keys(bestRun.alokasi_ruangan_awal || {}).forEach((r) =>
-        rooms.add(r),
+      setRuns(runMap);
+      setSelectedRunId(bestEntry[0]);
+      setSolverKind(selection.kind);
+      setLastVariant(
+        selection.kind === "hill" ? selection.variant : "simulated",
       );
-      Object.keys(bestRun.alokasi_ruangan || {}).forEach((r) => rooms.add(r));
-      setAvailableRooms(Array.from(rooms).sort());
     } catch (err) {
       console.error(err);
       setError(
@@ -202,36 +236,89 @@ export default function SchedulerUI() {
           ? err.message
           : "Terjadi kesalahan yang tidak diketahui",
       );
-      setRunResult(null);
+      setRuns({});
+      setSelectedRunId(null);
       setAvailableRooms([]);
       setSelectedRoom("");
+      setSolverKind(null);
       setLastVariant(null);
     } finally {
       setIsLoading(false);
     }
   }
 
-  const initialSlots: SlotEntry[] | undefined = runResult
-    ? (runResult.alokasi_ruangan_awal[selectedRoom] ?? [])
+  const selectedRun = selectedRunId ? runs[selectedRunId] : undefined;
+  const hillRun =
+    selectedRun && !isSimulatedRun(selectedRun)
+      ? (selectedRun as HillClimbingRun)
+      : undefined;
+  const simRun = isSimulatedRun(selectedRun)
+    ? (selectedRun as SimulatedAnnealingRun)
     : undefined;
-  const finalSlots: SlotEntry[] | undefined = runResult
-    ? (runResult.alokasi_ruangan[selectedRoom] ?? [])
-    : undefined;
+  const isSimulated = Boolean(simRun && solverKind === "simulated");
+  const isHill = Boolean(hillRun && solverKind === "hill");
 
-  const localFreqDisplay =
-    lastVariant === "sideways"
-      ? `${localFreq.toFixed(0)}`
-      : lastVariant === "random_restart"
-        ? `${localFreq.toFixed(0)}`
-        : fmtPct(localFreq);
-  const localFreqSuffix =
-    lastVariant === "sideways"
-      ? "moves"
-      : lastVariant === "random_restart"
-        ? "restarts"
-        : "";
+  const bestScore = selectedRun
+    ? selectedRun.objective_over_iteration.at(-1) ?? 0
+    : 0;
+  const duration = selectedRun?.search_time ?? 0;
+  const localOptIteration = selectedRun
+    ? hillRun?.local_optima_iteration ?? selectedRun.iteration ?? 0
+    : 0;
 
-  const hasResult = Boolean(runResult);
+  let localMetricTitle = "Total Iterations";
+  let localMetricSuffix = "";
+  let localMetricValue: number | null = null;
+  if (hillRun && isHill) {
+    if (lastVariant === "sideways") {
+      localMetricTitle = "Sideways Moves";
+      localMetricSuffix = "moves";
+      localMetricValue = hillRun.sideways_moves ?? 0;
+    } else if (lastVariant === "random_restart") {
+      localMetricTitle = "Restart Count";
+      localMetricSuffix = "restarts";
+      localMetricValue = hillRun.restart_count ?? 0;
+    } else {
+      localMetricTitle = "Total Iterations";
+      localMetricValue = hillRun.iteration ?? 0;
+    }
+  } else if (simRun && isSimulated) {
+    localMetricTitle = "Stuck Count";
+    localMetricValue = simRun.local_optima_stuck_count ?? 0;
+  }
+  const localMetricDisplay =
+    localMetricValue !== null
+      ? Number.isInteger(localMetricValue)
+        ? String(localMetricValue)
+        : formatNumber(localMetricValue)
+      : "-";
+
+  const objectiveSeries = selectedRun?.objective_over_iteration ?? [];
+  const hasObjectiveSeries = objectiveSeries.length > 0;
+
+  const temperatureSeries = simRun?.temperature_over_iteration ?? [];
+  const deltaSeries = simRun?.delta_energy_over_iteration ?? [];
+  const acceptanceSeries = simRun
+    ? deltaSeries.map((delta, idx) => {
+        const temp = temperatureSeries[idx] ?? 1;
+        if (temp <= 0) return 0;
+        if (delta <= 0) return 1;
+        return Math.exp(-delta / temp);
+      })
+    : [];
+  const hasTemperatureSeries = temperatureSeries.length > 0;
+  const hasAcceptanceSeries = acceptanceSeries.length > 0;
+
+  const initialSlots: SlotEntry[] =
+    selectedRun && selectedRoom
+      ? selectedRun.alokasi_ruangan_awal[selectedRoom] ?? []
+      : [];
+  const finalSlots: SlotEntry[] =
+    selectedRun && selectedRoom
+      ? selectedRun.alokasi_ruangan[selectedRoom] ?? []
+      : [];
+
+  const hasResult = Boolean(selectedRun);
 
   return (
     <div className="relative min-h-screen bg-gradient-to-b from-emerald-950 via-green-950 to-emerald-950 text-foreground">
@@ -345,37 +432,144 @@ export default function SchedulerUI() {
               <CardTitle className="text-white">Result</CardTitle>
             </CardHeader>
             <CardContent>
+              <div className="flex flex-wrap items-end gap-4 mb-6">
+                <div className="space-y-1">
+                  <Label className="text-xs text-white">Pilih Run</Label>
+                  <Select
+                    value={selectedRunId ?? ""}
+                    onValueChange={(value) => setSelectedRunId(value || null)}
+                  >
+                    <SelectTrigger className="w-52 bg-white/10 backdrop-blur-md border-white/20 text-white">
+                      <SelectValue placeholder="Pilih run" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {runEntries.map(([id, run], idx) => {
+                        const finalObj = run.objective_over_iteration.at(-1) ?? 0;
+                        return (
+                          <SelectItem key={id} value={id}>
+                            {`Run ${idx + 1} — ${formatNumber(finalObj, 2)}`}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
               <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <MetricCard
-                  title="Best Score"
-                  value={bestScore.toFixed(2)}
-                  suffix=""
+                  title="Final Objective"
+                  value={formatNumber(bestScore, 2)}
                 />
                 <MetricCard
                   title="Duration"
-                  value={duration.toFixed(3)}
+                  value={formatNumber(duration, 3)}
                   suffix="s"
                 />
                 <MetricCard
-                  title="Local Optima Count"
-                  value={String(localCount)}
+                  title="Local Optima Iteration"
+                  value={String(localOptIteration)}
                 />
                 <MetricCard
-                  title="Local Optima Metric"
-                  value={localFreqDisplay}
-                  suffix={localFreqSuffix}
+                  title={localMetricTitle}
+                  value={localMetricDisplay}
+                  suffix={localMetricSuffix}
                 />
               </div>
 
-              <div className="grid lg:grid-cols-2 gap-6 mt-6">
-                <LineChart
-                  title="Plot Objective vs Iterasi (accepted moves)"
-                  series={series1}
-                />
-                <LineChart
-                  title="Simulated Annealing: e^-Δ/T vs Iterasi"
-                  series={series2}
-                />
+              <div className="mt-6">
+                {hasObjectiveSeries ? (
+                  <LineChart
+                    title="Objective vs Iterasi"
+                    series={objectiveSeries}
+                  />
+                ) : (
+                  <p className="text-sm text-white/70">
+                    Tidak ada data iterasi untuk ditampilkan.
+                  </p>
+                )}
+              </div>
+
+              {isSimulated ? (
+                <div className="mt-6 grid gap-6 lg:grid-cols-2">
+                  {hasTemperatureSeries ? (
+                    <LineChart
+                      title="Temperatur vs Iterasi"
+                      series={temperatureSeries}
+                    />
+                  ) : (
+                    <p className="text-sm text-white/70">
+                      Tidak ada data temperatur untuk ditampilkan.
+                    </p>
+                  )}
+                  {hasAcceptanceSeries ? (
+                    <LineChart
+                      title="e^{-Δ/T} vs Iterasi"
+                      series={acceptanceSeries}
+                    />
+                  ) : (
+                    <p className="text-sm text-white/70">
+                      Tidak ada data e^{-Δ/T} untuk ditampilkan.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+
+              <div className="mt-6 overflow-x-auto">
+                <table className="w-full text-sm text-white/90 min-w-[680px]">
+                  <thead>
+                    <tr className="text-left border-b border-white/10">
+                      <th className="py-2 pr-4">Run</th>
+                      <th className="py-2 pr-4">Final Objective</th>
+                      <th className="py-2 pr-4">Duration (s)</th>
+                      <th className="py-2 pr-4">Iterations</th>
+                      <th className="py-2 pr-4">Local Optima Iter</th>
+                      <th className="py-2 pr-4">Stuck Count</th>
+                      <th className="py-2 pr-4">Sideways Moves</th>
+                      <th className="py-2 pr-4">Restarts</th>
+                      <th className="py-2 pr-4">Max Sideways</th>
+                      <th className="py-2 pr-4">Iter per Restart</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {runEntries.map(([id, run], idx) => {
+                      const finalObj = run.objective_over_iteration.at(-1) ?? 0;
+                      return (
+                        <tr
+                          key={id}
+                          className={`border-b border-white/10 last:border-b-0 ${
+                            selectedRunId === id ? "bg-white/10" : ""
+                          }`}
+                        >
+                          <td className="py-2 pr-4">{`Run ${idx + 1}`}</td>
+                          <td className="py-2 pr-4">{formatNumber(finalObj, 2)}</td>
+                          <td className="py-2 pr-4">{formatNumber(run.search_time, 3)}</td>
+                          <td className="py-2 pr-4">{run.iteration}</td>
+                          <td className="py-2 pr-4">
+                            {run.local_optima_iteration ?? run.iteration}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {isSimulatedRun(run) ? run.local_optima_stuck_count : "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {run.sideways_moves ?? "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {run.restart_count ?? "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {run.max_sideways ?? "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {run.iterations_per_restart?.length
+                              ? run.iterations_per_restart.join(", ")
+                              : "-"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
 
               <div className="mt-8 space-y-6">
@@ -436,19 +630,23 @@ export default function SchedulerUI() {
                     <ScheduleTable
                       caption={`State Awal — Ruangan: ${selectedRoom || "-"}`}
                       slots={initialSlots}
+                      emptyMessage="-"
                     />
                     <ScheduleTable
                       caption={`State Akhir — Ruangan: ${selectedRoom || "-"}`}
                       slots={finalSlots}
+                      emptyMessage="-"
                     />
                   </TabsContent>
 
                   <TabsContent value="mahasiswa" className="space-y-6">
                     <ScheduleTable
                       caption={`State Awal — Mahasiswa: ${selectedStudent}`}
+                      emptyMessage="-"
                     />
                     <ScheduleTable
                       caption={`State Akhir — Mahasiswa: ${selectedStudent}`}
+                      emptyMessage="-"
                     />
                   </TabsContent>
                 </Tabs>
