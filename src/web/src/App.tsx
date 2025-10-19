@@ -1,9 +1,10 @@
+import React from "react";
+import SchedulerUI from "./components/main";
+
 function App() {
   return (
     <>
-      <main>
-        <h1 className="text-3xl font-bold underline">Hello World</h1>
-      </main>
+      <SchedulerUI />
     </>
   );
 }
