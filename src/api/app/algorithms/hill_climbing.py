@@ -163,13 +163,12 @@ class SteepestAscentHillClimbing(Solver):
         while True:
             iter_result: IterationResult = self.state.next()
 
-            self.objective_plt.append(self.state.objective())
-            self.iteration += 1
-
-            # Check if we've reached a local optimum
             if not iter_result.move_accepted:
                 self.local_optima_iteration = self.iteration
                 break
+
+            self.iteration += 1
+            self.objective_plt.append(self.state.objective())
 
         endtime = time.time()
         self.search_time = endtime - starttime
