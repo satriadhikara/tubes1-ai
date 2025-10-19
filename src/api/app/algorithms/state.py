@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import time
 import random
 
-## Output object
+
 @dataclass(frozen=True)
 class Slot:
     kode_ruangan: str
@@ -10,11 +10,12 @@ class Slot:
     waktu_mulai: int
     waktu_akhir: int
 
+
 @dataclass
 class JadwalKuliah:
-    slot_kuliah: dict[str, list[Slot]]  # Banyaknya slot tiap kuliah == bobot sks
+    slot_kuliah: dict[str, list[Slot]]
 
-## Constraint
+
 LIST_HARI = [
     "Senin",
     "Selasa",
@@ -31,76 +32,105 @@ LIST_WAKTU_MULAI: list[tuple[str, int]] = [
     for j in range(MULAI_WAKTU_KULIAH, AKHIR_WAKTU_KULIAH)
 ]
 
-## Input object
+PRIORITY_WEIGHT_MAP: dict[int, float] = {
+    1: 1.75,
+    2: 1.5,
+    3: 1.25,
+}
+
+
+def priority_weight(priority: int) -> float:
+    return PRIORITY_WEIGHT_MAP.get(priority, 1.0)
+
+
 @dataclass
 class KelasMataKuliah:
     kode: str
     jumlah_mahasiswa: int
     sks: int
 
+
 @dataclass
 class Ruangan:
     kode: str
     kuota: int
 
+
 @dataclass
 class KuliahMahasiswa:
     nim: str
-    prio_mata_kuliah: dict[int, str]    # Key: nomor prioritas, Value: Kode kelas mata kuliah
+    prio_mata_kuliah: dict[int, str]
 
 
 class Problem:
-    def __init__(self, list_kelas: list[KelasMataKuliah], list_ruangan: list[Ruangan] =[], list_kuliah_mahasiswa: list[KuliahMahasiswa] =[]):
+    def __init__(
+        self,
+        list_kelas: list[KelasMataKuliah],
+        list_ruangan: list[Ruangan] = [],
+        list_kuliah_mahasiswa: list[KuliahMahasiswa] = [],
+    ):
         self.list_kelas = list_kelas
         self.list_ruangan = list_ruangan
         self.list_kuliah_mahasiswa = list_kuliah_mahasiswa
 
-    # Throw ValueError on invalid input state. Call immediately before algorithm start
     def validate(self):
-        kode_kelas_mk = dict()  # Dictionary untuk validasi jumlah mahasiswa
+        kode_kelas_mk = dict()
         for kelas in self.list_kelas:
             if kelas.kode in kode_kelas_mk:
                 raise ValueError(f"Terdapat duplikat kode kelas {kelas.kode}")
             kode_kelas_mk[kelas.kode] = kelas.jumlah_mahasiswa
-            if kelas.sks<1:
+            if kelas.sks < 1:
                 raise ValueError(f"SKS kelas {kelas.kode} tidak lebih dari nol")
-            if kelas.jumlah_mahasiswa<1:
-                raise ValueError(f"Jumlah mahasiswa pada kelas {kelas.kode} tidak lebih dari nol")
-    
+            if kelas.jumlah_mahasiswa < 1:
+                raise ValueError(
+                    f"Jumlah mahasiswa pada kelas {kelas.kode} tidak lebih dari nol"
+                )
+
         kode_ruangan_set = set()
         for ruangan in self.list_ruangan:
             kode_ruangan_set.add(ruangan.kode)
-            if ruangan.kuota<0:
+            if ruangan.kuota < 0:
                 raise ValueError("Kapasitas ruangan negatif")
-        if len(kode_ruangan_set)!=len(self.list_ruangan):
+        if len(kode_ruangan_set) != len(self.list_ruangan):
             raise ValueError("Terdapat kode ruangan duplikat")
-        
+
         for mahasiswa in self.list_kuliah_mahasiswa:
             # Validasi prioritas 1..n
             n = len(mahasiswa.prio_mata_kuliah)
             for prio, kode_mk in mahasiswa.prio_mata_kuliah.items():
-                if prio<1 or prio>n:
-                    raise ValueError(f"Mahasiswa NIM {mahasiswa.nim} memiliki nomor prioritas invalid ({prio})")
+                if prio < 1 or prio > n:
+                    raise ValueError(
+                        f"Mahasiswa NIM {mahasiswa.nim} memiliki nomor prioritas invalid ({prio})"
+                    )
                 if kode_mk not in kode_kelas_mk:
-                    raise ValueError(f"Mahasiswa NIM {mahasiswa.nim} memiliki kode mata kuliah invalid ({kode_mk})")
-                kode_kelas_mk[kode_mk]-=1
-        
-        for kode_kelas, jumlah_mahasiswa in kode_kelas_mk.items():
-            if jumlah_mahasiswa!=0:
-                raise ValueError(f"Kode kelas {kode_kelas} memiliki jumlah mahasiswa invalid")
+                    raise ValueError(
+                        f"Mahasiswa NIM {mahasiswa.nim} memiliki kode mata kuliah invalid ({kode_mk})"
+                    )
+                kode_kelas_mk[kode_mk] -= 1
+                if kode_kelas_mk[kode_mk] < 0:
+                    raise ValueError(
+                        f"Jumlah mahasiswa pada kelas {kode_mk} melebihi kapasitas terdaftar"
+                    )
+
 
 class State:
-    def __init__(self, problem: Problem, jadwal = JadwalKuliah({}), randomizer = random.Random(int(time.time()*1000))):
+    def __init__(
+        self,
+        problem: Problem,
+        jadwal=JadwalKuliah({}),
+        randomizer=random.Random(int(time.time() * 1000)),
+    ):
         self.problem = problem
-        self.jadwal = jadwal    # For initial seeding, call self.seed_waktu_kuliah()
+        self.jadwal = jadwal  # For initial seeding, call self.seed_waktu_kuliah()
         self.random = randomizer
 
         # Attributes for calculating objective function
         self.timetable_mahasiswa = {slot: 0 for slot in LIST_WAKTU_MULAI}
-        self.kuota_ruangan = {ruangan.kode:ruangan.kuota for ruangan in self.problem.list_ruangan}
-    
-    # Untuk setiap kelas kelas, random ruangan
-    # Waktu kuliah diacak perjam. Jika n sks, terbentuk n waktu kuliah, belum tentu berurut tapi kelas tidak akan overlap dengan kelas itu sendiri
+        self.kuota_ruangan = {
+            ruangan.kode: ruangan.kuota for ruangan in self.problem.list_ruangan
+        }
+        self.weight_sum_by_class = self._compute_weight_sum_by_class()
+
     def seed_jadwal(self):
         kuliah_dict = dict()
         list_kode_ruangan = [ruangan.kode for ruangan in self.problem.list_ruangan]
@@ -114,32 +144,37 @@ class State:
                     ruang_kelas[i],
                     jadwal_kelas[i][0],
                     jadwal_kelas[i][1],
-                    jadwal_kelas[i][1]+1
+                    jadwal_kelas[i][1] + 1,
                 )
                 for i in range(kelas.sks)
             ]
-        
+
         self.jadwal = JadwalKuliah(kuliah_dict)
-        
+
     def objective(self) -> float:
-        return self._tabrakan_jadwal_mahasiswa()+self._kuota_kelas()
-    
+        return (
+            self._tabrakan_jadwal_mahasiswa()
+            + self._tabrakan_ruangan_berbobot()
+            + self._kuota_kelas()
+        )
+
     def _tabrakan_jadwal_mahasiswa(self) -> float:
         res = 0
         timetable = self.timetable_mahasiswa
         for mhs in self.problem.list_kuliah_mahasiswa:
-            for kuliah in mhs.prio_mata_kuliah.values():
-                for slot in self.jadwal.slot_kuliah[kuliah]:
-                    key = (slot.hari, slot.waktu_mulai)
-                    timetable[key]+=1
-            
+            for kode_kuliah in mhs.prio_mata_kuliah.values():
+                for slot in self.jadwal.slot_kuliah[kode_kuliah]:
+                    for jam in range(slot.waktu_mulai, slot.waktu_akhir):
+                        key = (slot.hari, jam)
+                        timetable[key] += 1
+
             for key in timetable.keys():
                 tabrakan = timetable[key]
-                if tabrakan>1:
+                if tabrakan > 1:
                     res += tabrakan
                 timetable[key] = 0
         return res
-    
+
     def _kuota_kelas(self):
         res = 0
         kuota_ruangan = self.kuota_ruangan
@@ -147,6 +182,38 @@ class State:
             kode = kelas.kode
             for slot in self.jadwal.slot_kuliah[kode]:
                 kuota = kuota_ruangan[slot.kode_ruangan]
-                if kelas.jumlah_mahasiswa>kuota:
-                    res += kelas.jumlah_mahasiswa - kuota
+                if kelas.jumlah_mahasiswa > kuota:
+                    over_capacity = kelas.jumlah_mahasiswa - kuota
+                    durasi = slot.waktu_akhir - slot.waktu_mulai
+                    res += over_capacity * durasi
         return res
+
+    def _tabrakan_ruangan_berbobot(self) -> float:
+        res = 0.0
+        slot_conflicts: dict[Slot, list[str]] = {}
+        for kode, slot_list in self.jadwal.slot_kuliah.items():
+            for slot in slot_list:
+                if slot not in slot_conflicts:
+                    slot_conflicts[slot] = []
+                slot_conflicts[slot].append(kode)
+
+        for slot, daftar_kelas in slot_conflicts.items():
+            if len(daftar_kelas) <= 1:
+                continue
+            durasi = slot.waktu_akhir - slot.waktu_mulai
+            total_bobot = sum(
+                self.weight_sum_by_class.get(kode, 0.0) for kode in daftar_kelas
+            )
+            res += durasi * total_bobot
+        return res
+
+    def _compute_weight_sum_by_class(self) -> dict[str, float]:
+        weight_sum = {kelas.kode: 0.0 for kelas in self.problem.list_kelas}
+        for mahasiswa in self.problem.list_kuliah_mahasiswa:
+            for prioritas, kode_kuliah in mahasiswa.prio_mata_kuliah.items():
+                if kode_kuliah not in weight_sum:
+                    raise ValueError(
+                        f"Mahasiswa NIM {mahasiswa.nim} memiliki kode mata kuliah invalid ({kode_kuliah})"
+                    )
+                weight_sum[kode_kuliah] += priority_weight(prioritas)
+        return weight_sum
