@@ -994,12 +994,12 @@ export default function SchedulerUI() {
                   )}
                   {hasAcceptanceSeries ? (
                     <LineChart
-                      title="e^{-Δ/T} vs Iterasi"
+                      title="exp(-Δ/T) vs Iterasi"
                       series={acceptanceSeries}
                     />
                   ) : (
                     <p className="text-sm text-white/70">
-                      Tidak ada data e^{-Δ / T} untuk ditampilkan.
+                      Tidak ada data exp(-Δ / T) untuk ditampilkan.
                     </p>
                   )}
                 </div>
@@ -1045,9 +1045,49 @@ export default function SchedulerUI() {
                   <tbody>
                     {runEntries.map(([id, run], idx) => {
                       const bestObj = finalObjective(run);
-                      const avgObj = isGeneticRun(run)
+                      const isHillRow = isHillRun(run);
+                      const isSimRow = isSimulatedRun(run);
+                      const isGenRow = isGeneticRun(run);
+                      const avgObj = isGenRow
                         ? (run.objective_avg_over_iteration.at(-1) ?? null)
                         : null;
+                      const localOptimaIteration = isHillRow
+                        ? (run.local_optima_iteration ?? run.iteration)
+                        : run.iteration;
+                      const sidewaysMoves =
+                        isHillRow && run.sideways_moves !== undefined
+                          ? run.sideways_moves
+                          : "-";
+                      const restartCount =
+                        isHillRow && run.restart_count !== undefined
+                          ? run.restart_count
+                          : "-";
+                      const maxSideways =
+                        isHillRow && run.max_sideways !== undefined
+                          ? run.max_sideways
+                          : "-";
+                      const iterationsPerRestart = isHillRow
+                        ? run.iterations_per_restart?.length
+                          ? run.iterations_per_restart.join(", ")
+                          : "-"
+                        : "-";
+                      const stuckCount = isSimRow
+                        ? run.local_optima_stuck_count
+                        : "-";
+                      const populationSize = isGenRow
+                        ? run.population_size
+                        : "-";
+                      const paramsDisplay = isGenRow
+                        ? Object.entries(run.params || {})
+                            .map(([k, v]) => {
+                              const formatted = Number.isInteger(v)
+                                ? v.toString()
+                                : formatNumber(v, Math.abs(v) < 1 ? 3 : 2);
+                              return `${k}=${formatted}`;
+                            })
+                            .join(", ") || "-"
+                        : "-";
+
                       return (
                         <tr
                           key={id}
@@ -1066,46 +1106,14 @@ export default function SchedulerUI() {
                             {formatNumber(run.search_time, 3)}
                           </td>
                           <td className="py-2 pr-4">{run.iteration}</td>
-                          <td className="py-2 pr-4">
-                            {run.local_optima_iteration ?? run.iteration}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {isSimulatedRun(run)
-                              ? run.local_optima_stuck_count
-                              : "-"}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {run.sideways_moves ?? "-"}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {run.restart_count ?? "-"}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {run.max_sideways ?? "-"}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {run.iterations_per_restart?.length
-                              ? run.iterations_per_restart.join(", ")
-                              : "-"}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {isGeneticRun(run) ? run.population_size : "-"}
-                          </td>
-                          <td className="py-2 pr-4">
-                            {isGeneticRun(run)
-                              ? Object.entries(run.params || {})
-                                  .map(([k, v]) => {
-                                    const formatted = Number.isInteger(v)
-                                      ? v.toString()
-                                      : formatNumber(
-                                          v,
-                                          Math.abs(v) < 1 ? 3 : 2,
-                                        );
-                                    return `${k}=${formatted}`;
-                                  })
-                                  .join(", ") || "-"
-                              : "-"}
-                          </td>
+                          <td className="py-2 pr-4">{localOptimaIteration}</td>
+                          <td className="py-2 pr-4">{stuckCount}</td>
+                          <td className="py-2 pr-4">{sidewaysMoves}</td>
+                          <td className="py-2 pr-4">{restartCount}</td>
+                          <td className="py-2 pr-4">{maxSideways}</td>
+                          <td className="py-2 pr-4">{iterationsPerRestart}</td>
+                          <td className="py-2 pr-4">{populationSize}</td>
+                          <td className="py-2 pr-4">{paramsDisplay}</td>
                         </tr>
                       );
                     })}
