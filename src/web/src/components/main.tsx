@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,10 +13,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import Particles from "./ui/particles";
-import ScheduleTable from "@/components/ui/scheduleTable";
+import ScheduleTable, { type SlotEntry } from "@/components/ui/scheduleTable";
 import MetricCard from "@/components/ui/metricCard";
 
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+
 function fmtPct(n: number) {
+  if (!Number.isFinite(n)) {
+    return "0.00%";
+  }
   return `${n.toFixed(2)}%`;
 }
 
@@ -59,13 +64,38 @@ function LineChart({ title, series }: { title: string; series: number[] }) {
 }
 
 // --- main page ---
+type HillClimbingRun = {
+  alokasi_ruangan_awal: Record<string, SlotEntry[]>;
+  alokasi_ruangan: Record<string, SlotEntry[]>;
+  search_time: number;
+  iteration: number;
+  objective_over_iteration: number[];
+  local_optima_iteration?: number;
+  sideways_moves?: number;
+  max_sideways?: number;
+  restart_count?: number;
+  iterations_per_restart?: number[];
+};
+
+type HillClimbingResponse = {
+  run: Record<string, HillClimbingRun>;
+};
+
 export default function SchedulerUI() {
   const [jsonInput, setJsonInput] = useState<string>(
     `{\n  "kelas_mata_kuliah": [],\n  "ruangan": [],\n  "mahasiswa": []\n}`,
   );
-  const [algorithm, setAlgorithm] = useState<string>("Simulated Annealing");
-  const [selectedRoom, setSelectedRoom] = useState<string>("multimedia");
+  const [algorithm, setAlgorithm] = useState<string>(
+    "Steepest Ascent Hill-Climbing",
+  );
+  const [selectedRoom, setSelectedRoom] = useState<string>("");
   const [selectedStudent, setSelectedStudent] = useState<string>("13523601");
+
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [runResult, setRunResult] = useState<HillClimbingRun | null>(null);
+  const [availableRooms, setAvailableRooms] = useState<string[]>([]);
+  const [lastVariant, setLastVariant] = useState<string | null>(null);
 
   // metrics (mocked)
   const [bestScore, setBestScore] = useState<number>(0);
@@ -76,19 +106,132 @@ export default function SchedulerUI() {
   const series1 = useMemo(() => mockSeries(60, 2), []);
   const series2 = useMemo(() => mockSeries(60, 9), []);
 
-  function handleSolve() {
+  useEffect(() => {
+    if (availableRooms.length > 0) {
+      setSelectedRoom((prev) =>
+        prev && availableRooms.includes(prev) ? prev : availableRooms[0],
+      );
+    }
+  }, [availableRooms]);
+
+  function mapAlgorithmToVariant(label: string): string | null {
+    switch (label) {
+      case "Steepest Ascent Hill-Climbing":
+        return "steepest";
+      case "Stochastic Hill-Climbing":
+        return "stochastic";
+      case "Sideways Move Hill-Climbing":
+        return "sideways";
+      case "Random Restart Hill-Climbing":
+        return "random_restart";
+      default:
+        return null;
+    }
+  }
+
+  async function handleSolve() {
+    let parsedInput: unknown;
     try {
-      JSON.parse(jsonInput);
+      parsedInput = JSON.parse(jsonInput);
     } catch (e) {
       alert("JSON tidak valid. Periksa kembali formatnya.");
       return;
     }
-    const rnd = Math.random;
-    setBestScore(Number((rnd() * 100).toFixed(2)));
-    setDuration(Number((rnd() * 1.2).toFixed(3))); // seconds
-    setLocalCount(Math.floor(rnd() * 10));
-    setLocalFreq(Number((rnd() * 100).toFixed(2)));
+
+    const variant = mapAlgorithmToVariant(algorithm);
+    if (!variant) {
+      alert(
+        "Integrasi UI saat ini baru tersedia untuk algoritma hill-climbing.",
+      );
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const params = new URLSearchParams({ variant });
+      const response = await fetch(`${API_BASE}/api/hill-climbing?${params}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsedInput),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText || "Gagal menjalankan solver");
+      }
+
+      const data = (await response.json()) as HillClimbingResponse;
+      const runs = Object.values(data.run);
+      if (runs.length === 0) {
+        throw new Error("Respons solver kosong");
+      }
+
+      const bestRun = runs.reduce((best, current) => {
+        const bestObj = best.objective_over_iteration.at(-1) ?? Infinity;
+        const currentObj = current.objective_over_iteration.at(-1) ?? Infinity;
+        return currentObj < bestObj ? current : best;
+      });
+
+      const finalObjective = bestRun.objective_over_iteration.at(-1) ?? 0;
+      setRunResult(bestRun);
+      setBestScore(finalObjective);
+      setDuration(bestRun.search_time ?? 0);
+      setLocalCount(bestRun.local_optima_iteration ?? bestRun.iteration ?? 0);
+
+      let auxMetric = 0;
+      if (variant === "sideways") {
+        auxMetric = bestRun.sideways_moves ?? 0;
+      } else if (variant === "random_restart") {
+        auxMetric = bestRun.restart_count ?? 0;
+      }
+      setLocalFreq(auxMetric);
+      setLastVariant(variant);
+
+      const rooms = new Set<string>();
+      Object.keys(bestRun.alokasi_ruangan_awal || {}).forEach((r) =>
+        rooms.add(r),
+      );
+      Object.keys(bestRun.alokasi_ruangan || {}).forEach((r) => rooms.add(r));
+      setAvailableRooms(Array.from(rooms).sort());
+    } catch (err) {
+      console.error(err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Terjadi kesalahan yang tidak diketahui",
+      );
+      setRunResult(null);
+      setAvailableRooms([]);
+      setSelectedRoom("");
+      setLastVariant(null);
+    } finally {
+      setIsLoading(false);
+    }
   }
+
+  const initialSlots: SlotEntry[] | undefined = runResult
+    ? (runResult.alokasi_ruangan_awal[selectedRoom] ?? [])
+    : undefined;
+  const finalSlots: SlotEntry[] | undefined = runResult
+    ? (runResult.alokasi_ruangan[selectedRoom] ?? [])
+    : undefined;
+
+  const localFreqDisplay =
+    lastVariant === "sideways"
+      ? `${localFreq.toFixed(0)}`
+      : lastVariant === "random_restart"
+        ? `${localFreq.toFixed(0)}`
+        : fmtPct(localFreq);
+  const localFreqSuffix =
+    lastVariant === "sideways"
+      ? "moves"
+      : lastVariant === "random_restart"
+        ? "restarts"
+        : "";
+
+  const hasResult = Boolean(runResult);
 
   return (
     <div className="relative min-h-screen bg-gradient-to-b from-emerald-950 via-green-950 to-emerald-950 text-foreground">
@@ -180,129 +323,150 @@ export default function SchedulerUI() {
               </div>
 
               <Button
-                className="w-full bg-white/10 hover:bg-white/15 border border-white/20 text-white cursor-pointer"
+                className="w-full bg-white/10 hover:bg-white/15 border border-white/20 text-white cursor-pointer disabled:opacity-60"
                 onClick={handleSolve}
+                disabled={isLoading}
               >
-                Solve
+                {isLoading ? "Running..." : "Solve"}
               </Button>
               <p className="text-xs text-muted-foreground">
                 Tip: gunakan format JSON yang valid.
               </p>
+              {error ? <p className="text-xs text-red-200">{error}</p> : null}
             </CardContent>
           </Card>
         </div>
       </section>
 
       <section className="container mx-auto px-4 mt-10">
-        <Card className="bg-white/10 backdrop-blur-xl border-white/20 shadow-xl">
-          <CardHeader>
-            <CardTitle className="text-white">Result</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <MetricCard
-                title="Best Score"
-                value={bestScore.toFixed(2)}
-                suffix=""
-              />
-              <MetricCard
-                title="Duration"
-                value={duration.toFixed(3)}
-                suffix="s"
-              />
-              <MetricCard
-                title="Local Optima Count"
-                value={String(localCount)}
-              />
-              <MetricCard
-                title="Local Optima Frequency"
-                value={fmtPct(localFreq)}
-              />
-            </div>
+        {hasResult ? (
+          <Card className="bg-white/10 backdrop-blur-xl border-white/20 shadow-xl">
+            <CardHeader>
+              <CardTitle className="text-white">Result</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <MetricCard
+                  title="Best Score"
+                  value={bestScore.toFixed(2)}
+                  suffix=""
+                />
+                <MetricCard
+                  title="Duration"
+                  value={duration.toFixed(3)}
+                  suffix="s"
+                />
+                <MetricCard
+                  title="Local Optima Count"
+                  value={String(localCount)}
+                />
+                <MetricCard
+                  title="Local Optima Metric"
+                  value={localFreqDisplay}
+                  suffix={localFreqSuffix}
+                />
+              </div>
 
-            <div className="grid lg:grid-cols-2 gap-6 mt-6">
-              <LineChart
-                title="Plot Objective vs Iterasi (accepted moves)"
-                series={series1}
-              />
-              <LineChart
-                title="Simulated Annealing: e^-Δ/T vs Iterasi"
-                series={series2}
-              />
-            </div>
+              <div className="grid lg:grid-cols-2 gap-6 mt-6">
+                <LineChart
+                  title="Plot Objective vs Iterasi (accepted moves)"
+                  series={series1}
+                />
+                <LineChart
+                  title="Simulated Annealing: e^-Δ/T vs Iterasi"
+                  series={series2}
+                />
+              </div>
 
-            <div className="mt-8 space-y-6">
-              <Tabs defaultValue="ruangan">
-                <div className="flex items-center justify-between flex-wrap gap-3">
-                  <TabsList className="bg-white/10 backdrop-blur-md border border-white/20">
-                    <TabsTrigger value="ruangan">Ruangan</TabsTrigger>
-                    <TabsTrigger value="mahasiswa">Mahasiswa</TabsTrigger>
-                  </TabsList>
+              <div className="mt-8 space-y-6">
+                <Tabs defaultValue="ruangan">
+                  <div className="flex items-center justify-between flex-wrap gap-3">
+                    <TabsList className="bg-white/10 backdrop-blur-md border border-white/20">
+                      <TabsTrigger value="ruangan">Ruangan</TabsTrigger>
+                      <TabsTrigger value="mahasiswa">Mahasiswa</TabsTrigger>
+                    </TabsList>
 
-                  <div className="flex items-center gap-3">
-                    <div className="space-y-1">
-                      <Label className="text-xs text-white">
-                        Pilih Ruangan / Kelas
-                      </Label>
-                      <Select
-                        value={selectedRoom}
-                        onValueChange={setSelectedRoom}
-                      >
-                        <SelectTrigger className="w-48 bg-white/10 backdrop-blur-md border-white/20 text-white">
-                          <SelectValue placeholder="Pilih ruangan" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="7609">7609</SelectItem>
-                          <SelectItem value="7606">7606</SelectItem>
-                          <SelectItem value="multimedia">multimedia</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-white">
+                          Pilih Ruangan / Kelas
+                        </Label>
+                        <Select
+                          value={selectedRoom}
+                          onValueChange={setSelectedRoom}
+                          disabled={availableRooms.length === 0}
+                        >
+                          <SelectTrigger className="w-48 bg-white/10 backdrop-blur-md border-white/20 text-white disabled:opacity-60">
+                            <SelectValue placeholder="Pilih ruangan" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableRooms.map((room) => (
+                              <SelectItem key={room} value={room}>
+                                {room}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                    <div className="space-y-1">
-                      <Label className="text-xs text-white">
-                        Pilih Mahasiswa
-                      </Label>
-                      <Select
-                        value={selectedStudent}
-                        onValueChange={setSelectedStudent}
-                      >
-                        <SelectTrigger className="w-48 bg-white/10 backdrop-blur-md border-white/20 text-white">
-                          <SelectValue placeholder="Pilih mahasiswa" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="13523601">13523601</SelectItem>
-                          <SelectItem value="135236641">135236641</SelectItem>
-                          <SelectItem value="13523669">13523669</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-white">
+                          Pilih Mahasiswa
+                        </Label>
+                        <Select
+                          value={selectedStudent}
+                          onValueChange={setSelectedStudent}
+                        >
+                          <SelectTrigger className="w-48 bg-white/10 backdrop-blur-md border-white/20 text-white">
+                            <SelectValue placeholder="Pilih mahasiswa" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="13523601">13523601</SelectItem>
+                            <SelectItem value="135236641">135236641</SelectItem>
+                            <SelectItem value="13523669">13523669</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <Separator className="my-4" />
+                  <Separator className="my-4" />
 
-                <TabsContent value="ruangan" className="space-y-6">
-                  <ScheduleTable
-                    caption={`State Awal — Ruangan: ${selectedRoom}`}
-                  />
-                  <ScheduleTable
-                    caption={`State Akhir — Ruangan: ${selectedRoom}`}
-                  />
-                </TabsContent>
+                  <TabsContent value="ruangan" className="space-y-6">
+                    <ScheduleTable
+                      caption={`State Awal — Ruangan: ${selectedRoom || "-"}`}
+                      slots={initialSlots}
+                    />
+                    <ScheduleTable
+                      caption={`State Akhir — Ruangan: ${selectedRoom || "-"}`}
+                      slots={finalSlots}
+                    />
+                  </TabsContent>
 
-                <TabsContent value="mahasiswa" className="space-y-6">
-                  <ScheduleTable
-                    caption={`State Awal — Mahasiswa: ${selectedStudent}`}
-                  />
-                  <ScheduleTable
-                    caption={`State Akhir — Mahasiswa: ${selectedStudent}`}
-                  />
-                </TabsContent>
-              </Tabs>
-            </div>
-          </CardContent>
-        </Card>
+                  <TabsContent value="mahasiswa" className="space-y-6">
+                    <ScheduleTable
+                      caption={`State Awal — Mahasiswa: ${selectedStudent}`}
+                    />
+                    <ScheduleTable
+                      caption={`State Akhir — Mahasiswa: ${selectedStudent}`}
+                    />
+                  </TabsContent>
+                </Tabs>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="bg-white/10 backdrop-blur-xl border-white/20 shadow-xl">
+            <CardHeader>
+              <CardTitle className="text-white">Result</CardTitle>
+            </CardHeader>
+            <CardContent className="py-12 text-center">
+              <p className="text-sm text-white/80">
+                Jalankan solver untuk melihat jadwal dan metrik hasil.
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </section>
 
       <footer className="container mx-auto px-4 py-10 text-xs text-muted-foreground text-center">
