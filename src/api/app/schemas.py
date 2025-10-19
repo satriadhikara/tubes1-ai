@@ -1,19 +1,23 @@
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 
+
 class KelasMataKuliahModel(BaseModel):
     kode: str
     jumlah_mahasiswa: int
     sks: int
 
+
 class RuanganModel(BaseModel):
     kode: str
     kuota: int
+
 
 class MahasiswaModel(BaseModel):
     nim: str
     daftar_mk: List[str]
     prioritas: List[int]
+
 
 class StateInputModel(BaseModel):
     kelas_mata_kuliah: List[KelasMataKuliahModel]
@@ -27,6 +31,7 @@ class SlotKuliahModel(BaseModel):
     waktu_mulai: int
     waktu_akhir: int
 
+
 class ResultsModel(BaseModel):
     alokasi_ruangan_awal: Dict[str, List[SlotKuliahModel]]
     alokasi_ruangan: Dict[str, List[SlotKuliahModel]]
@@ -34,10 +39,20 @@ class ResultsModel(BaseModel):
     iteration: int
     objective_over_iteration: List[float]
 
+
 class SimulatedAnnealingResultsModel(ResultsModel):
     local_optima_stuck_count: int
     delta_energy_over_iteration: list[float]
     temperature_over_iteration: list[float]
 
+
 class SimulatedAnnealingResponseModel(BaseModel):
     run: Dict[int, SimulatedAnnealingResultsModel]
+
+
+class HillClimbingResultsModel(ResultsModel):
+    local_optima_iteration: int
+
+
+class HillClimbingResponseModel(BaseModel):
+    run: Dict[int, HillClimbingResultsModel]

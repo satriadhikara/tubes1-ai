@@ -1,14 +1,10 @@
 from dataclasses import dataclass
 from .state import Problem, State, JadwalKuliah, Slot, LIST_WAKTU_MULAI
 from .solver import Solver
-from ..schemas import SimulatedAnnealingResultsModel
+from ..schemas import HillClimbingResultsModel
 import random
-import math
 import time
 import copy
-
-DEFAULT_INITIAL_TEMP = 100000
-DEFAULT_DECAY_RATE = 0.995
 
 
 @dataclass(frozen=True)
@@ -17,7 +13,7 @@ class IterationResult:
     move_accepted: bool
 
 
-class SimulatedAnnealingState(State):
+class HillClimbingState(State):
     def __init__(
         self,
         problem: Problem,
@@ -29,30 +25,53 @@ class SimulatedAnnealingState(State):
         self.slot_assignment: dict[Slot, list[str]] = dict()
         self.empty_slots: set[Slot] = set()
 
-    def next(self, temperature: float) -> IterationResult:
+    def next(self) -> IterationResult:
         e_init = self._energy()
+        best_delta = 0
+        best_move = None
+        best_e_neighbor = e_init
 
-        e_neighbor = None
-        move_accepted = None
-        move_type = self.random.random()
-        if move_type > 0.5 or len(self.empty_slots) == 0:
+        num_swaps_to_try = min(len(self.problem.list_kelas) ** 2, 50)
+        for _ in range(num_swaps_to_try):
             kelas1, slot1, kelas2, slot2 = self._random_pair_jadwal()
             self._swap_pair_jadwal(kelas1, slot1, kelas2, slot2)
             e_neighbor = self._energy()
-            move_accepted = self._accept_move(e_neighbor - e_init, temperature)
-            if not move_accepted:
-                self._swap_pair_jadwal(kelas1, slot2, kelas2, slot1)
-        else:
-            slot_from, kode, slot_to = self._random_move_to_empty_slot()
-            self._move_into_slot(slot_from, kode, slot_to)
-            e_neighbor = self._energy()
-            move_accepted = self._accept_move(e_neighbor - e_init, temperature)
-            if not move_accepted:
+            delta = e_neighbor - e_init
+
+            if delta < best_delta:
+                best_delta = delta
+                best_move = ("swap", kelas1, slot1, kelas2, slot2)
+                best_e_neighbor = e_neighbor
+
+            self._swap_pair_jadwal(kelas1, slot2, kelas2, slot1)
+
+        if len(self.empty_slots) > 0:
+            num_moves_to_try = min(
+                len(self.problem.list_kelas) * len(self.empty_slots), 50
+            )
+            for _ in range(num_moves_to_try):
+                slot_from, kode, slot_to = self._random_move_to_empty_slot()
+                self._move_into_slot(slot_from, kode, slot_to)
+                e_neighbor = self._energy()
+                delta = e_neighbor - e_init
+
+                if delta < best_delta:
+                    best_delta = delta
+                    best_move = ("move", slot_from, kode, slot_to)
+                    best_e_neighbor = e_neighbor
+
                 self._move_into_slot(slot_to, kode, slot_from)
 
-        return IterationResult(
-            delta_energy=e_neighbor - e_init, move_accepted=move_accepted
-        )
+        if best_move is not None:
+            if best_move[0] == "swap":
+                _, kelas1, slot1, kelas2, slot2 = best_move
+                self._swap_pair_jadwal(kelas1, slot1, kelas2, slot2)
+            elif best_move[0] == "move":
+                _, slot_from, kode, slot_to = best_move
+                self._move_into_slot(slot_from, kode, slot_to)
+            return IterationResult(delta_energy=best_delta, move_accepted=True)
+        else:
+            return IterationResult(delta_energy=0, move_accepted=False)
 
     def seed_jadwal(self):
         super().seed_jadwal()
@@ -71,13 +90,6 @@ class SimulatedAnnealingState(State):
 
     def _energy(self) -> float:
         return self.objective()
-
-    def _accept_move(self, delta_energy: float, temp: float) -> bool:
-        if delta_energy < 0:
-            return True
-        if self.random.random() < math.exp(-delta_energy / temp):
-            return True
-        return False
 
     def _swap_pair_jadwal(self, kelas1: str, slot1: Slot, kelas2: str, slot2: Slot):
         slot_kuliah_1 = self.jadwal.slot_kuliah[kelas1]
@@ -119,38 +131,25 @@ class SimulatedAnnealingState(State):
             self.empty_slots.discard(slot_to)
 
 
-class SimulatedAnnealing(Solver):
-    def __init__(
-        self,
-        input: Problem,
-        initial_temp=DEFAULT_INITIAL_TEMP,
-        decay=DEFAULT_DECAY_RATE,
-    ):
+class SteepestAscentHillClimbing(Solver):
+    def __init__(self, input: Problem):
         super().__init__(input)
-        self.state = SimulatedAnnealingState(input)
-        self.initial_temp = initial_temp
-        self.temp = initial_temp
-        self.decay = decay
+        self.state = HillClimbingState(input)
 
         # Statistics - general
         self.search_time = 0
         self.iteration = 0
         self.objective_plt: list[float] = []
 
-        # Statistics - simulated annealing
-        self.stuck_count = 0
-        self.delta_energy_plt: list[float] = []
-        self.temp_plt: list[float] = []
+        # Statistics - hill climbing
+        self.local_optima_iteration = 0
 
     def search(self):
         # Reset statistics in case solver instance is reused
         self.search_time = 0
         self.iteration = 0
         self.objective_plt = []
-        self.stuck_count = 0
-        self.delta_energy_plt = []
-        self.temp_plt = []
-        self.temp = self.initial_temp
+        self.local_optima_iteration = 0
 
         # --- INIT ---
         self.state.seed_jadwal()
@@ -161,28 +160,26 @@ class SimulatedAnnealing(Solver):
         # --- Start ---
         starttime = time.time()
 
-        while self.temp > 1:
-            iter_result: IterationResult = self.state.next(self.temp)
+        while True:
+            iter_result: IterationResult = self.state.next()
 
             self.objective_plt.append(self.state.objective())
-            self.delta_energy_plt.append(iter_result.delta_energy)
-            self.temp_plt.append(self.temp)
-            self.temp *= self.decay
             self.iteration += 1
+
+            # Check if we've reached a local optimum
             if not iter_result.move_accepted:
-                self.stuck_count += 1
+                self.local_optima_iteration = self.iteration
+                break
 
         endtime = time.time()
         self.search_time = endtime - starttime
 
-    def get_result(self) -> SimulatedAnnealingResultsModel:
-        return SimulatedAnnealingResultsModel(
+    def get_result(self) -> HillClimbingResultsModel:
+        return HillClimbingResultsModel(
             alokasi_ruangan_awal=self._form_alokasi_ruangan(self.jadwal_init),
             alokasi_ruangan=self._form_alokasi_ruangan(self.jadwal),
             search_time=self.search_time,
             iteration=self.iteration,
             objective_over_iteration=self.objective_plt,
-            local_optima_stuck_count=self.stuck_count,
-            delta_energy_over_iteration=self.delta_energy_plt,
-            temperature_over_iteration=self.temp_plt,
+            local_optima_iteration=self.local_optima_iteration,
         )
