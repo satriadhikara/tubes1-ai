@@ -60,3 +60,18 @@ class HillClimbingResultsModel(ResultsModel):
 
 class HillClimbingResponseModel(BaseModel):
     run: Dict[int, HillClimbingResultsModel]
+
+
+class GeneticAlgorithmResultsModel(BaseModel):
+    alokasi_ruangan_awal: Dict[str, List[SlotKuliahModel]]
+    alokasi_ruangan: Dict[str, List[SlotKuliahModel]]
+    search_time: float
+    iteration: int
+    population_size: int
+    objective_best_over_iteration: List[float]
+    objective_avg_over_iteration: List[float]
+    params: Dict[str, float]
+
+
+class GeneticAlgorithmResponseModel(BaseModel):
+    run: Dict[int, GeneticAlgorithmResultsModel]

@@ -6,6 +6,8 @@ from .schemas import (
     SimulatedAnnealingResultsModel,
     HillClimbingResponseModel,
     HillClimbingResultsModel,
+    GeneticAlgorithmResponseModel,
+    GeneticAlgorithmResultsModel,
 )
 from .algorithms.state_model_parser import load_problem
 from .algorithms.simulated_annealing import SimulatedAnnealing
@@ -17,6 +19,7 @@ from .algorithms.hill_climbing import (
     DEFAULT_MAX_SIDEWAYS,
     DEFAULT_MAX_RESTART,
 )
+from .algorithms.genetic_algorithm import GeneticAlgorithm
 
 app = FastAPI()
 
@@ -91,6 +94,34 @@ def compute_hill_climbing(
         results: dict[int, HillClimbingResultsModel] = {}
         for i in range(3):
             solver = solver_factory()
+            solver.search()
+            results[i] = solver.get_result()
+        return {"run": results}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/genetic-algorithm")
+def compute_genetic_algorithm(
+    request: StateInputModel,
+    population_size: int = 50,
+    max_generations: int = 200,
+    crossover_rate: float = 0.9,
+    mutation_rate: float = 0.2,
+    tournament_k: int = 3,
+    elitism: int = 1,
+) -> GeneticAlgorithmResponseModel:
+    try:
+        problem = load_problem(request)
+        results: dict[int, GeneticAlgorithmResultsModel] = {}
+        for i in range(3):
+            solver = GeneticAlgorithm(problem, params=None)
+            solver.params.population_size = population_size
+            solver.params.max_generations = max_generations
+            solver.params.crossover_rate = crossover_rate
+            solver.params.mutation_rate = mutation_rate
+            solver.params.tournament_k = tournament_k
+            solver.params.elitism = elitism
             solver.search()
             results[i] = solver.get_result()
         return {"run": results}
