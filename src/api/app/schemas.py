@@ -51,7 +51,11 @@ class SimulatedAnnealingResponseModel(BaseModel):
 
 
 class HillClimbingResultsModel(ResultsModel):
-    local_optima_iteration: int
+    local_optima_iteration: Optional[int] = None
+    sideways_moves: Optional[int] = None
+    max_sideways: Optional[int] = None
+    restart_count: Optional[int] = None
+    iterations_per_restart: Optional[List[int]] = None
 
 
 class HillClimbingResponseModel(BaseModel):
