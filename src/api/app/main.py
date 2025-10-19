@@ -20,7 +20,7 @@ from .algorithms.hill_climbing import (
     DEFAULT_MAX_SIDEWAYS,
     DEFAULT_MAX_RESTART,
 )
-from .algorithms.genetic_algorithm import GeneticAlgorithm
+from .algorithms.genetic_algorithm import GeneticAlgorithm, GAParams
 
 app = FastAPI()
 origins = [
@@ -126,14 +126,16 @@ def compute_genetic_algorithm(
     try:
         problem = load_problem(request)
         results: dict[int, GeneticAlgorithmResultsModel] = {}
+        params = GAParams(
+            population_size=population_size,
+            max_generations=max_generations,
+            crossover_rate=crossover_rate,
+            mutation_rate=mutation_rate,
+            tournament_k=tournament_k,
+            elitism=elitism,
+        )
         for i in range(3):
-            solver = GeneticAlgorithm(problem, params=None)
-            solver.params.population_size = population_size
-            solver.params.max_generations = max_generations
-            solver.params.crossover_rate = crossover_rate
-            solver.params.mutation_rate = mutation_rate
-            solver.params.tournament_k = tournament_k
-            solver.params.elitism = elitism
+            solver = GeneticAlgorithm(problem, params=params)
             solver.search()
             results[i] = solver.get_result()
         return {"run": results}

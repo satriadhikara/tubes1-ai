@@ -51,15 +51,16 @@ function LineChart({ title, series }: { title: string; series: number[] }) {
 }
 
 // --- types ---
-type BaseRun = {
+type BaseRunCommon = {
   alokasi_ruangan_awal: Record<string, SlotEntry[]>;
   alokasi_ruangan: Record<string, SlotEntry[]>;
   search_time: number;
   iteration: number;
-  objective_over_iteration: number[];
 };
 
-type HillClimbingRun = BaseRun & {
+type HillClimbingRun = BaseRunCommon & {
+  type: "hill";
+  objective_over_iteration: number[];
   local_optima_iteration?: number;
   sideways_moves?: number;
   max_sideways?: number;
@@ -67,26 +68,60 @@ type HillClimbingRun = BaseRun & {
   iterations_per_restart?: number[];
 };
 
-type SimulatedAnnealingRun = BaseRun & {
+type SimulatedAnnealingRun = BaseRunCommon & {
+  type: "simulated";
+  objective_over_iteration: number[];
   local_optima_stuck_count: number;
   delta_energy_over_iteration: number[];
   temperature_over_iteration: number[];
 };
 
-type SolverRun = HillClimbingRun | SimulatedAnnealingRun;
+type GeneticAlgorithmRun = BaseRunCommon & {
+  type: "genetic";
+  population_size: number;
+  objective_best_over_iteration: number[];
+  objective_avg_over_iteration: number[];
+  params: Record<string, number>;
+};
+
+type SolverRun = HillClimbingRun | SimulatedAnnealingRun | GeneticAlgorithmRun;
 
 type HillClimbingResponse = {
-  run: Record<string, HillClimbingRun>;
+  run: Record<string, Omit<HillClimbingRun, "type">>;
 };
 
 type SimulatedAnnealingResponse = {
-  run: Record<string, SimulatedAnnealingRun>;
+  run: Record<string, Omit<SimulatedAnnealingRun, "type">>;
 };
 
-type SolverKind = "hill" | "simulated";
+type GeneticAlgorithmResponse = {
+  run: Record<string, Omit<GeneticAlgorithmRun, "type">>;
+};
 
-function isSimulatedRun(run: SolverRun | undefined): run is SimulatedAnnealingRun {
-  return Boolean(run && "local_optima_stuck_count" in run);
+type SolverKind = "hill" | "simulated" | "genetic";
+
+function isHillRun(run: SolverRun | undefined): run is HillClimbingRun {
+  return Boolean(run && run.type === "hill");
+}
+
+function isSimulatedRun(
+  run: SolverRun | undefined,
+): run is SimulatedAnnealingRun {
+  return Boolean(run && run.type === "simulated");
+}
+
+function isGeneticRun(run: SolverRun | undefined): run is GeneticAlgorithmRun {
+  return Boolean(run && run.type === "genetic");
+}
+
+function finalObjective(run: SolverRun): number {
+  if (isGeneticRun(run)) {
+    return run.objective_best_over_iteration.at(-1) ?? Infinity;
+  }
+  if (isSimulatedRun(run) || isHillRun(run)) {
+    return run.objective_over_iteration.at(-1) ?? Infinity;
+  }
+  return Infinity;
 }
 
 export default function SchedulerUI() {
@@ -146,8 +181,12 @@ export default function SchedulerUI() {
   }, [availableRooms]);
 
   type AlgorithmSelection =
-    | { kind: "hill"; variant: "steepest" | "stochastic" | "sideways" | "random_restart" }
-    | { kind: "simulated" };
+    | {
+        kind: "hill";
+        variant: "steepest" | "stochastic" | "sideways" | "random_restart";
+      }
+    | { kind: "simulated" }
+    | { kind: "genetic" };
 
   function resolveAlgorithm(label: string): AlgorithmSelection | null {
     switch (label) {
@@ -161,6 +200,8 @@ export default function SchedulerUI() {
         return { kind: "hill", variant: "random_restart" };
       case "Simulated Annealing":
         return { kind: "simulated" };
+      case "Genetic Algorithm":
+        return { kind: "genetic" };
       default:
         return null;
     }
@@ -178,7 +219,7 @@ export default function SchedulerUI() {
     const selection = resolveAlgorithm(algorithm);
     if (!selection) {
       alert(
-        "Integrasi UI saat ini hanya tersedia untuk algoritma Hill-Climbing dan Simulated Annealing.",
+        "Integrasi UI saat ini hanya tersedia untuk algoritma Hill-Climbing, Simulated Annealing, dan Genetic Algorithm.",
       );
       return;
     }
@@ -187,39 +228,72 @@ export default function SchedulerUI() {
     setError(null);
 
     try {
-      let response: Response;
+      let runMap: Record<string, SolverRun> = {};
+
       if (selection.kind === "hill") {
         const params = new URLSearchParams({ variant: selection.variant });
-        response = await fetch(`${API_BASE}/api/hill-climbing?${params}`, {
+        const response = await fetch(
+          `${API_BASE}/api/hill-climbing?${params}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(parsedInput),
+          },
+        );
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || "Gagal menjalankan solver");
+        }
+        const data = (await response.json()) as HillClimbingResponse;
+        runMap = Object.fromEntries(
+          Object.entries(data.run || {}).map(([id, run]) => [
+            id,
+            { type: "hill", ...run } as HillClimbingRun,
+          ]),
+        );
+      } else if (selection.kind === "simulated") {
+        const response = await fetch(`${API_BASE}/api/sim-anneal`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(parsedInput),
         });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || "Gagal menjalankan solver");
+        }
+        const data = (await response.json()) as SimulatedAnnealingResponse;
+        runMap = Object.fromEntries(
+          Object.entries(data.run || {}).map(([id, run]) => [
+            id,
+            { type: "simulated", ...run } as SimulatedAnnealingRun,
+          ]),
+        );
       } else {
-        response = await fetch(`${API_BASE}/api/sim-anneal`, {
+        const response = await fetch(`${API_BASE}/api/genetic-algorithm`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(parsedInput),
         });
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || "Gagal menjalankan solver");
+        }
+        const data = (await response.json()) as GeneticAlgorithmResponse;
+        runMap = Object.fromEntries(
+          Object.entries(data.run || {}).map(([id, run]) => [
+            id,
+            { type: "genetic", ...run } as GeneticAlgorithmRun,
+          ]),
+        );
       }
-
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || "Gagal menjalankan solver");
-      }
-
-      const data = (await response.json()) as
-        | HillClimbingResponse
-        | SimulatedAnnealingResponse;
-      const runMap = (data.run ?? {}) as Record<string, SolverRun>;
       const entries = Object.entries(runMap);
       if (entries.length === 0) {
         throw new Error("Respons solver kosong");
       }
 
       const bestEntry = entries.reduce((best, current) => {
-        const bestObj = best[1].objective_over_iteration.at(-1) ?? Infinity;
-        const currentObj = current[1].objective_over_iteration.at(-1) ?? Infinity;
+        const bestObj = finalObjective(best[1]);
+        const currentObj = finalObjective(current[1]);
         return currentObj < bestObj ? current : best;
       });
 
@@ -227,7 +301,11 @@ export default function SchedulerUI() {
       setSelectedRunId(bestEntry[0]);
       setSolverKind(selection.kind);
       setLastVariant(
-        selection.kind === "hill" ? selection.variant : "simulated",
+        selection.kind === "hill"
+          ? selection.variant
+          : selection.kind === "simulated"
+            ? "simulated"
+            : "genetic",
       );
     } catch (err) {
       console.error(err);
@@ -249,26 +327,53 @@ export default function SchedulerUI() {
 
   const selectedRun = selectedRunId ? runs[selectedRunId] : undefined;
   const hillRun =
-    selectedRun && !isSimulatedRun(selectedRun)
-      ? (selectedRun as HillClimbingRun)
+    isHillRun(selectedRun) && solverKind === "hill" ? selectedRun : undefined;
+  const simRun =
+    isSimulatedRun(selectedRun) && solverKind === "simulated"
+      ? selectedRun
       : undefined;
-  const simRun = isSimulatedRun(selectedRun)
-    ? (selectedRun as SimulatedAnnealingRun)
-    : undefined;
-  const isSimulated = Boolean(simRun && solverKind === "simulated");
-  const isHill = Boolean(hillRun && solverKind === "hill");
+  const geneticRun =
+    isGeneticRun(selectedRun) && solverKind === "genetic"
+      ? selectedRun
+      : undefined;
+  const isHill = Boolean(hillRun);
+  const isSimulated = Boolean(simRun);
+  const isGenetic = Boolean(geneticRun);
 
-  const bestScore = selectedRun
-    ? selectedRun.objective_over_iteration.at(-1) ?? 0
-    : 0;
+  const objectiveSeries = hillRun
+    ? hillRun.objective_over_iteration
+    : simRun
+      ? simRun.objective_over_iteration
+      : geneticRun
+        ? geneticRun.objective_best_over_iteration
+        : [];
+  const hasObjectiveSeries = objectiveSeries.length > 0;
+
+  const averageSeries = geneticRun?.objective_avg_over_iteration ?? [];
+  const hasAverageSeries = isGenetic && averageSeries.length > 0;
+
+  const temperatureSeries = simRun?.temperature_over_iteration ?? [];
+  const deltaSeries = simRun?.delta_energy_over_iteration ?? [];
+  const acceptanceSeries = simRun
+    ? deltaSeries.map((delta, idx) => {
+        const temp = temperatureSeries[idx] ?? 1;
+        if (temp <= 0) return 0;
+        if (delta <= 0) return 1;
+        return Math.exp(-delta / temp);
+      })
+    : [];
+  const hasTemperatureSeries = isSimulated && temperatureSeries.length > 0;
+  const hasAcceptanceSeries = isSimulated && acceptanceSeries.length > 0;
+
+  const bestScore = selectedRun ? finalObjective(selectedRun) : 0;
   const duration = selectedRun?.search_time ?? 0;
-  const localOptIteration = selectedRun
-    ? hillRun?.local_optima_iteration ?? selectedRun.iteration ?? 0
-    : 0;
+  const localOptIteration =
+    hillRun?.local_optima_iteration ?? selectedRun?.iteration ?? 0;
 
   let localMetricTitle = "Total Iterations";
   let localMetricSuffix = "";
-  let localMetricValue: number | null = null;
+  let localMetricValue: number | null = selectedRun?.iteration ?? null;
+
   if (hillRun && isHill) {
     if (lastVariant === "sideways") {
       localMetricTitle = "Sideways Moves";
@@ -285,7 +390,11 @@ export default function SchedulerUI() {
   } else if (simRun && isSimulated) {
     localMetricTitle = "Stuck Count";
     localMetricValue = simRun.local_optima_stuck_count ?? 0;
+  } else if (geneticRun && isGenetic) {
+    localMetricTitle = "Population Size";
+    localMetricValue = geneticRun.population_size ?? 0;
   }
+
   const localMetricDisplay =
     localMetricValue !== null
       ? Number.isInteger(localMetricValue)
@@ -293,30 +402,24 @@ export default function SchedulerUI() {
         : formatNumber(localMetricValue)
       : "-";
 
-  const objectiveSeries = selectedRun?.objective_over_iteration ?? [];
-  const hasObjectiveSeries = objectiveSeries.length > 0;
-
-  const temperatureSeries = simRun?.temperature_over_iteration ?? [];
-  const deltaSeries = simRun?.delta_energy_over_iteration ?? [];
-  const acceptanceSeries = simRun
-    ? deltaSeries.map((delta, idx) => {
-        const temp = temperatureSeries[idx] ?? 1;
-        if (temp <= 0) return 0;
-        if (delta <= 0) return 1;
-        return Math.exp(-delta / temp);
-      })
-    : [];
-  const hasTemperatureSeries = temperatureSeries.length > 0;
-  const hasAcceptanceSeries = acceptanceSeries.length > 0;
+  const objectiveChartTitle = isGenetic
+    ? "Best Objective vs Generasi"
+    : "Objective vs Iterasi";
+  const avgChartTitle = "Average Objective vs Generasi";
 
   const initialSlots: SlotEntry[] =
     selectedRun && selectedRoom
-      ? selectedRun.alokasi_ruangan_awal[selectedRoom] ?? []
+      ? (selectedRun.alokasi_ruangan_awal[selectedRoom] ?? [])
       : [];
   const finalSlots: SlotEntry[] =
     selectedRun && selectedRoom
-      ? selectedRun.alokasi_ruangan[selectedRoom] ?? []
+      ? (selectedRun.alokasi_ruangan[selectedRoom] ?? [])
       : [];
+
+  const gaParamEntries = geneticRun
+    ? Object.entries(geneticRun.params ?? {})
+    : [];
+  const hasGAParams = isGenetic && gaParamEntries.length > 0;
 
   const hasResult = Boolean(selectedRun);
 
@@ -444,10 +547,10 @@ export default function SchedulerUI() {
                     </SelectTrigger>
                     <SelectContent>
                       {runEntries.map(([id, run], idx) => {
-                        const finalObj = run.objective_over_iteration.at(-1) ?? 0;
+                        const bestObj = finalObjective(run);
                         return (
                           <SelectItem key={id} value={id}>
-                            {`Run ${idx + 1} — ${formatNumber(finalObj, 2)}`}
+                            {`Run ${idx + 1} — ${formatNumber(bestObj, 2)}`}
                           </SelectItem>
                         );
                       })}
@@ -480,7 +583,7 @@ export default function SchedulerUI() {
               <div className="mt-6">
                 {hasObjectiveSeries ? (
                   <LineChart
-                    title="Objective vs Iterasi"
+                    title={objectiveChartTitle}
                     series={objectiveSeries}
                   />
                 ) : (
@@ -489,6 +592,12 @@ export default function SchedulerUI() {
                   </p>
                 )}
               </div>
+
+              {isGenetic && hasAverageSeries ? (
+                <div className="mt-6">
+                  <LineChart title={avgChartTitle} series={averageSeries} />
+                </div>
+              ) : null}
 
               {isSimulated ? (
                 <div className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -509,18 +618,32 @@ export default function SchedulerUI() {
                     />
                   ) : (
                     <p className="text-sm text-white/70">
-                      Tidak ada data e^{-Δ/T} untuk ditampilkan.
+                      Tidak ada data e^{-Δ / T} untuk ditampilkan.
                     </p>
                   )}
                 </div>
               ) : null}
 
+              {hasGAParams ? (
+                <div className="mt-6 text-sm text-white/80 flex flex-wrap gap-3">
+                  {gaParamEntries.map(([key, value]) => (
+                    <span
+                      key={key}
+                      className="rounded-full bg-white/10 px-3 py-1 border border-white/10"
+                    >
+                      {`${key}: ${formatNumber(value, Math.abs(value) < 1 ? 3 : 2)}`}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
               <div className="mt-6 overflow-x-auto">
-                <table className="w-full text-sm text-white/90 min-w-[680px]">
+                <table className="w-full text-sm text-white/90 min-w-[950px]">
                   <thead>
                     <tr className="text-left border-b border-white/10">
                       <th className="py-2 pr-4">Run</th>
-                      <th className="py-2 pr-4">Final Objective</th>
+                      <th className="py-2 pr-4">Best Objective</th>
+                      <th className="py-2 pr-4">Avg Objective</th>
                       <th className="py-2 pr-4">Duration (s)</th>
                       <th className="py-2 pr-4">Iterations</th>
                       <th className="py-2 pr-4">Local Optima Iter</th>
@@ -529,11 +652,16 @@ export default function SchedulerUI() {
                       <th className="py-2 pr-4">Restarts</th>
                       <th className="py-2 pr-4">Max Sideways</th>
                       <th className="py-2 pr-4">Iter per Restart</th>
+                      <th className="py-2 pr-4">Population</th>
+                      <th className="py-2 pr-4">Params</th>
                     </tr>
                   </thead>
                   <tbody>
                     {runEntries.map(([id, run], idx) => {
-                      const finalObj = run.objective_over_iteration.at(-1) ?? 0;
+                      const bestObj = finalObjective(run);
+                      const avgObj = isGeneticRun(run)
+                        ? (run.objective_avg_over_iteration.at(-1) ?? null)
+                        : null;
                       return (
                         <tr
                           key={id}
@@ -542,14 +670,23 @@ export default function SchedulerUI() {
                           }`}
                         >
                           <td className="py-2 pr-4">{`Run ${idx + 1}`}</td>
-                          <td className="py-2 pr-4">{formatNumber(finalObj, 2)}</td>
-                          <td className="py-2 pr-4">{formatNumber(run.search_time, 3)}</td>
+                          <td className="py-2 pr-4">
+                            {formatNumber(bestObj, 2)}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {avgObj !== null ? formatNumber(avgObj, 2) : "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {formatNumber(run.search_time, 3)}
+                          </td>
                           <td className="py-2 pr-4">{run.iteration}</td>
                           <td className="py-2 pr-4">
                             {run.local_optima_iteration ?? run.iteration}
                           </td>
                           <td className="py-2 pr-4">
-                            {isSimulatedRun(run) ? run.local_optima_stuck_count : "-"}
+                            {isSimulatedRun(run)
+                              ? run.local_optima_stuck_count
+                              : "-"}
                           </td>
                           <td className="py-2 pr-4">
                             {run.sideways_moves ?? "-"}
@@ -563,6 +700,19 @@ export default function SchedulerUI() {
                           <td className="py-2 pr-4">
                             {run.iterations_per_restart?.length
                               ? run.iterations_per_restart.join(", ")
+                              : "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {isGeneticRun(run) ? run.population_size : "-"}
+                          </td>
+                          <td className="py-2 pr-4">
+                            {isGeneticRun(run)
+                              ? Object.entries(run.params || {})
+                                  .map(
+                                    ([k, v]) =>
+                                      `${k}=${formatNumber(v, Math.abs(v) < 1 ? 3 : 2)}`,
+                                  )
+                                  .join(", ") || "-"
                               : "-"}
                           </td>
                         </tr>
