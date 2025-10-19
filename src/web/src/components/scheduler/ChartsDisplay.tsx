@@ -1,6 +1,11 @@
 import { LineChart } from "./LineChart";
 import type { SolverRun } from "./types";
-import { isHillRun, isSimulatedRun, isGeneticRun } from "./utils";
+import {
+  isHillRun,
+  isSimulatedRun,
+  isGeneticRun,
+  formatNumber,
+} from "./utils";
 
 interface ChartsDisplayProps {
   selectedRun: SolverRun | undefined;
@@ -50,12 +55,21 @@ export function ChartsDisplay({
     ? "Best Objective vs Generasi"
     : "Objective vs Iterasi";
   const avgChartTitle = "Average Objective vs Generasi";
+  const iterationLabel = isGenetic
+    ? (idx: number) => `Generasi ${idx}`
+    : (idx: number) => `Iterasi ${idx}`;
 
   return (
     <>
       <div className="mt-6">
         {hasObjectiveSeries ? (
-          <LineChart title={objectiveChartTitle} series={objectiveSeries} />
+          <LineChart
+            title={objectiveChartTitle}
+            series={objectiveSeries}
+            color="#34d399"
+            valueLabel={isGenetic ? "Objective" : "Objective"}
+            indexFormatter={iterationLabel}
+          />
         ) : (
           <p className="text-sm text-white/70">
             Tidak ada data iterasi untuk ditampilkan.
@@ -65,7 +79,13 @@ export function ChartsDisplay({
 
       {isGenetic && hasAverageSeries ? (
         <div className="mt-6">
-          <LineChart title={avgChartTitle} series={averageSeries} />
+          <LineChart
+            title={avgChartTitle}
+            series={averageSeries}
+            color="#38bdf8"
+            valueLabel="Avg Objective"
+            indexFormatter={(idx) => `Generasi ${idx}`}
+          />
         </div>
       ) : null}
 
@@ -75,6 +95,9 @@ export function ChartsDisplay({
             <LineChart
               title="Temperatur vs Iterasi"
               series={temperatureSeries}
+              color="#60a5fa"
+              valueLabel="Temperatur"
+              valueFormatter={(value) => formatNumber(value, 2)}
             />
           ) : (
             <p className="text-sm text-white/70">
@@ -82,7 +105,13 @@ export function ChartsDisplay({
             </p>
           )}
           {hasAcceptanceSeries ? (
-            <LineChart title="exp(-Δ/T) vs Iterasi" series={acceptanceSeries} />
+            <LineChart
+              title="exp(-Δ/T) vs Iterasi"
+              series={acceptanceSeries}
+              color="#fbbf24"
+              valueLabel="Acceptance"
+              valueFormatter={(value) => formatNumber(value, 3)}
+            />
           ) : (
             <p className="text-sm text-white/70">
               Tidak ada data exp(-Δ / T) untuk ditampilkan.
