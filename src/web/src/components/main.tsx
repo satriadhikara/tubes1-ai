@@ -385,6 +385,10 @@ function SchedulerUI() {
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-emerald-200 via-mint-200 to-teal-300 drop-shadow-[0_1px_0_rgba(0,0,0,0.35)]">
             Pencarian Solusi Penjadwalan Kelas Mingguan dengan Local Search
           </h1>
+
+          <h2 className="text-sm text-white/80 mt-2 ">
+            by 13522125 - 13522128 - 13523063
+          </h2>
         </div>
       </header>
 

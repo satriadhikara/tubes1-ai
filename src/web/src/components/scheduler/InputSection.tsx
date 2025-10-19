@@ -1,5 +1,6 @@
+import CodeEditor from "@uiw/react-textarea-code-editor";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 
 interface InputSectionProps {
   jsonInput: string;
@@ -12,12 +13,20 @@ export function InputSection({ jsonInput, onJsonChange }: InputSectionProps) {
       <CardHeader className="pb-3">
         <CardTitle className="text-base text-white">Input JSON</CardTitle>
       </CardHeader>
-      <CardContent>
-        <Textarea
-          className="min-h-[320px] font-mono text-sm bg-white/10 backdrop-blur-md border-white/20 text-white placeholder:text-white"
+      <CardContent className="max-h-96 overflow-y-auto">
+        <CodeEditor
           value={jsonInput}
-          onChange={(e) => onJsonChange(e.target.value)}
+          language="json"
           placeholder="Tempelkan input JSON sesuai spesifikasi..."
+          onChange={(event) => onJsonChange(event.target.value)}
+          padding={16}
+          className="min-h-[320px] rounded-md border border-white/20 font-mono leading-relaxed text-white bg-black/20"
+          style={{
+            backgroundColor: "rgba(15, 23, 42, 0.35)",
+            fontSize: 14,
+            color: "white",
+            fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+          }}
         />
       </CardContent>
     </Card>
